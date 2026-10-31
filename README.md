@@ -1,82 +1,276 @@
-# dsh-qqbot-voice —— 给 QQ 机器人装上耳朵和嘴
+# dsh-qqbot-voice
 
-给 DSH 的 QQ 机器人（[`@tencent-connect/dsh-qqbot`](https://github.com/tencent-connect/dsh-qqbot)）加语音能力：
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D20.3.0-brightgreen.svg)](package.json)
+[![DSH Plugin](https://img.shields.io/badge/DSH-plugin-5b6cff.svg)](https://github.com/topics/dsh-plugin)
+
+DeepSeek Harness（DSH）插件，为 [`@tencent-connect/dsh-qqbot`](https://github.com/tencent-connect/dsh-qqbot)
+提供语音能力：入站语音消息自动转写并注入 agent 上下文，助手回复可合成为语音消息发送，
+并提供对讲模式的连续语音交互。
+
+---
+
+## 目录
+
+- [1. 功能](#1-功能)
+- [2. 兼容性与依赖](#2-兼容性与依赖)
+- [3. 安装](#3-安装)
+- [4. 使用](#4-使用)
+- [5. 引擎](#5-引擎)
+- [6. 配置](#6-配置)
+- [7. 工作原理](#7-工作原理)
+- [8. 运行状态与故障排查](#8-运行状态与故障排查)
+- [9. 安全与隐私](#9-安全与隐私)
+- [10. 已知限制](#10-已知限制)
+- [11. 开发](#11-开发)
+- [12. 许可证](#12-许可证)
+- [English Overview](#english-overview)
+
+---
+
+## 1. 功能
 
 | 能力 | 说明 |
 | --- | --- |
-| **听**（ASR） | 群里/私聊有人发语音，自动转成文字进 agent 上下文——模型看到的是 `[Voice message] 帮我记一下三点买米`，而不是一个读不懂的音频链接 |
-| **说**（TTS） | 能把回复念成语音发出去；也可以被要求「用语音说一句」 |
-| **语音通话**（对讲） | 通话期间：你发语音 → 机器人听 → 机器人回语音。静默太久自动挂断 |
+| 语音转写（ASR） | 入站语音消息转写为文本并注入 agent 上下文，格式为 `[Voice message] <文本>` |
+| 语音合成（TTS） | 将回复合成为 QQ 语音消息；支持按指令或按模式自动执行 |
+| 语音通话（对讲） | 通话期间双方以语音消息往返；静默超时自动挂断；文本回复同时保留 |
+| 引擎可替换 | ASR 与 TTS 均为可配置的引擎链，支持云端接口与本地命令 |
+| 运行时可观测 | 落盘诊断文件，记录引擎链、机器人实例与最近入站事件 |
 
-## 先说清楚：为什么「通话」是对讲机式的
+---
 
-QQ 官方机器人 API **没有实时语音通话（RTC）** 能力——开放平台的服务端接口里只有
-消息收发 / 富媒体上传 / 流式消息 / 互动回调，没有任何拨号、SDP、音频流接口，
-SDK（`@tencent-connect/qqbot-nodejs`）里也没有。所以机器人没法真的「打电话」。
+## 2. 兼容性与依赖
 
-这个插件做的是**对讲机式语音通话**：一段一段的语音消息，配上自动转写和自动语音回复，
-体感上接近「打电话」，但每一句都是独立的一条 QQ 语音消息。文字回复仍然照发，当字幕用。
+| 项目 | 要求 | 说明 |
+| --- | --- | --- |
+| DSH | 与 `dsh-qqbot` 声明的兼容范围一致：`0.1.0-rc.8`（CLI）、`0.2.0-rc.2`（Desktop） | 插件依赖 `dsh-qqbot` 的内部模块结构，故兼容范围随其声明 |
+| Node.js | `>= 20.3.0` | 使用内置 `fetch`、`node:zlib` 等 |
+| `@tencent-connect/dsh-qqbot` | `>= 0.5.0` | 必需；插件通过补丁获取其 QQBot 实例 |
+| ASR / TTS 服务 | 默认阿里云百炼 | 需配置 `DASHSCOPE_API_KEY`；亦可使用任意 OpenAI 兼容端点或本地命令 |
+| `silk-wasm` | 可选 | 用于解码平台未提供 WAV 的 SILK 语音附件 |
 
-## 安装
+> **平台能力说明**：QQ 官方机器人 API 不提供实时语音通话（RTC）能力，
+> 开放平台未提供拨号、SDP 或音频流接口。因此本插件的「通话」为基于语音消息的
+> 对讲模式，每次交互为一条独立的语音消息。
 
-### 方式一：一条命令装进 profile
+---
+
+## 3. 安装
+
+### 3.1 通过 DSH CLI 安装
 
 ```bash
-# 从 GitHub 源码安装
 dsh plugin --profile web add github:ChencLi819/dsh-qqbot-voice
 
-# Desktop 版把 profile 换成 desktop
+# Desktop 版
 dsh plugin --profile desktop add github:ChencLi819/dsh-qqbot-voice
 ```
 
-> ⚠️ 这个插件**还需要给 `dsh-qqbot` 打一个补丁**才能拿到机器人实例（原因见下）。
-> 用 CLI 装完之后，补打一步：
+本插件需通过补丁获取 `dsh-qqbot` 的机器人实例，安装后需执行补丁步骤：
 
 ```powershell
-node tools/install.mjs        # 幂等：会补 pnpm link、bundles 和 dsh-qqbot 补丁
-# 或者只打补丁：
-node tools/patch-dsh-qqbot-voice-hook.mjs
+node tools/install.mjs                            # 幂等：补全依赖、bundle 与补丁
+node tools/patch-dsh-qqbot-voice-hook.mjs         # 或仅执行补丁
 ```
 
-装完**重启 DSH**（补丁改的是插件模块，热重载不一定重新导入）。
+完成后重启 DSH。
 
-### 方式二：用插件自带的安装脚本（一步到位）
+### 3.2 通过仓库脚本安装
 
 ```powershell
 node tools/install.mjs
 ```
 
-它会做三件事：
+脚本为幂等操作，依次执行：
 
-1. `pnpm add link:<本包目录>`（软链，改代码即改插件）；
-2. 往 profile 的 `dsh.profile.bundles` 里加上 `dsh-qqbot-voice`；
-3. 给 `dsh-qqbot` 打一个**机器人注册表**补丁（`qqbot-bots` 服务）。
+1. `pnpm add link:<包目录>`，以软链方式装入 profile；
+2. 在 profile 的 `dsh.profile.bundles` 中登记 `dsh-qqbot-voice`；
+3. 对 `dsh-qqbot` 应用机器人注册表补丁。
 
 ```powershell
-node tools/install.mjs --check                    # 看装没装、补丁打没打
-node tools/install.mjs --profile-dir <path>       # 指定 profile（默认 ~/.dsh/profiles/desktop）
+node tools/install.mjs --check                 # 检查安装与补丁状态
+node tools/install.mjs --profile-dir <path>    # 指定 profile（默认 ~/.dsh/profiles/desktop）
+node tools/install.mjs --no-patch              # 跳过补丁步骤
 ```
 
-**第 3 步为什么需要**：`dsh-qqbot` 把 `QQBot` 实例关在 `bootstrap` 里，外面拿不到，
-而语音插件必须摸到它才能 ① 挂入站中间件（`bot.use`）② 发语音（`mediaSender.sendVoice`）。
-补丁只是把 `{appId, bot, manager, mediaSender, config, logger}` 注册成一个 Cordis 服务，
-**不改任何原有逻辑**；`pnpm` 更新 dsh-qqbot 后补丁会被整包覆盖，重跑一次 install 即可。
+### 3.3 补丁说明
 
-装完**重启 DSH**（补丁改的是插件模块，热重载不一定重新导入）。日志里看到这行就对了：
+`dsh-qqbot` 将 `QQBot` 实例封装在 `bootstrap` 内部，插件无法直接访问，而语音功能需要：
+
+1. 注册入站中间件（`bot.use`）；
+2. 发送语音消息（`mediaSender.sendVoice`）。
+
+补丁将 `{ appId, bot, manager, mediaSender, config, logger }` 注册为 Cordis 服务 `qqbot-bots`，
+**不修改原有逻辑**。`dsh-qqbot` 升级后补丁会被覆盖，需重新执行。
+
+---
+
+## 4. 使用
+
+### 4.1 指令
+
+指令格式为 `/` 或 `／` 开头，可在私聊直接发送，或在群聊中 @ 机器人后发送。
+
+| 指令 | 说明 |
+| --- | --- |
+| `/语音` | 查询当前状态（模式、ASR/TTS 引擎链） |
+| `/语音 开` | 开启语音回复：文本照常发送，并额外发送一条语音 |
+| `/语音 关` | 关闭语音回复 |
+| `/通话` | 开始语音通话（对讲模式） |
+| `/挂断` | 结束语音通话 |
+| `/打电话` | 等同于 `/通话` |
+
+指令支持自然语言参数，例如 `/语音 打开`、`/语音 关闭`、`/通话 开始`、`/通话 结束`。
+
+### 4.2 工具
+
+插件向模型注册 2 个工具。
+
+#### `qqbot_say`
+
+将文本合成为语音并发送至当前会话。仅在 QQ 会话中可用。
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `text` | string | 是 | 待合成文本，建议为口语化短句，不使用 Markdown；超出长度上限时截断 |
+
+#### `qqbot_voice_call`
+
+控制语音通话与语音回复模式。
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `action` | string | 是 | `start` 开始通话 / `end` 结束 / `voice` 开启语音回复 / `off` 全部关闭 / `status` 查询状态 |
+
+---
+
+## 5. 引擎
+
+ASR 与 TTS 均为引擎链，`engine: 'auto'` 时按可用性依次选择。
+
+### 5.1 语音转写（ASR）
+
+| engine | 说明 |
+| --- | --- |
+| `dashscope`（默认） | 阿里云百炼 `qwen3-asr-flash`，多模态原生接口 |
+| `http` | OpenAI 兼容接口 `POST {baseURL}/audio/transcriptions` |
+| `command` | 本地命令模板，`{audio}` 替换为音频路径，取 stdout 作为结果 |
+| `qq` | 平台自带转写（`asr_refer_text`），无需外部调用，可用性由平台决定 |
+
+`stt.preferQq: true` 时优先使用平台自带转写。
+
+### 5.2 语音合成（TTS）
+
+| engine | 说明 |
+| --- | --- |
+| `dashscope`（默认） | `qwen3-tts-flash`，音色 `Cherry` / `Serena` / `Ethan` / `Chelsie` |
+| `http` | OpenAI 兼容接口 `POST {baseURL}/audio/speech` |
+| `command` | 本地命令模板，`{text}`、`{out}`、`{voice}` 为占位符 |
+
+本地命令示例（edge-tts）：
 
 ```
-[qqbot-voice] 听:dashscope → qq · 说:dashscope · 状态:~/.dsh/qqbot-voice/state.json
+edge-tts --voice {voice} --text {text} --write-media {out}
 ```
 
-### 怎么确认真的挂上了
+> 未内置 Edge 朗读接口：该服务要求 `Sec-MS-GEC v2` 校验参数，算法随服务端更新而变化，
+> 因此以 `command` 引擎提供接入方式，避免内置实现失效。
 
-桌面版看不到 stdout，所以插件会写两个文件：
+### 5.3 凭据解析顺序
 
-- `~/.dsh/qqbot-voice/diagnostic.json` —— 插件起没起来、听/说各用什么引擎、
-  挂到了哪个机器人、最近一条语音附件里 QQ 给了什么字段（排查「为什么没转写」看这里）；
-- `~/.dsh/qqbot-voice/state.json` —— 谁开着语音回复 / 谁在通话。
+`config.apiKey` → 环境变量（由 `apiKeyEnv` 指定，默认 `DASHSCOPE_API_KEY`）→ `~/.dsh/.credentials.yaml` 中的同名条目。
 
-正常的 `diagnostic.json` 长这样：
+---
+
+## 6. 配置
+
+默认值定义于 `lib/config.js` 的 `DEFAULTS`。在 profile 的 `cordis.patch.yml` 中按需覆盖，配置为深合并：
+
+```yaml
+- id: qqbot-voice
+  config:
+    stt:
+      preferQq: true
+    tts:
+      voice: Serena
+    call:
+      maxIdleMinutes: 5
+      greetText: 在的，请讲
+```
+
+| 配置项 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `enabled` | boolean | `true` | 插件总开关 |
+| `stateDir` | string | `~/.dsh/qqbot-voice` | 状态、诊断与日志目录 |
+| `stt.engine` | string | `auto` | `auto` / `dashscope` / `http` / `command` / `qq` / `off` |
+| `stt.preferQq` | boolean | `false` | 优先使用平台自带转写 |
+| `stt.timeoutMs` | number | `30000` | 转写超时，超时后回退至平台转写 |
+| `stt.maxMB` | number | `20` | 语音附件大小上限 |
+| `stt.language` | string | `zh` | 识别语言 |
+| `stt.cacheSize` | number | `200` | 转写结果缓存条数 |
+| `stt.dashscope.apiKeyEnv` | string | `DASHSCOPE_API_KEY` | 凭据对应的环境变量名 |
+| `stt.dashscope.model` | string | `qwen3-asr-flash` | 识别模型 |
+| `tts.engine` | string | `auto` | `auto` / `dashscope` / `http` / `command` / `off` |
+| `tts.timeoutMs` | number | `60000` | 合成超时 |
+| `tts.maxChars` | number | `180` | 单条语音文本上限，超出按句子截断 |
+| `tts.dashscope.voice` | string | `Cherry` | 音色 |
+| `tts.dashscope.model` | string | `qwen3-tts-flash` | 合成模型 |
+| `call.enabled` | boolean | `true` | 是否允许语音通话 |
+| `call.maxIdleMinutes` | number | `8` | 静默自动挂断时长 |
+| `call.announce` | boolean | `true` | 开始与结束时播报提示音 |
+| `call.greetText` | string | `喂？在呢，你说。` | 开始通话时的播报文本 |
+| `call.byeText` | string | `那我先挂了，回头聊。` | 结束通话时的播报文本 |
+| `call.hintChars` | number | `40` | 通话期间对文本回复长度的提示阈值 |
+| `voiceReply.sanitize` | boolean | `true` | 合成前移除 Markdown、链接与 emoji |
+| `voiceReply.minChars` | number | `2` | 短于该长度不合成 |
+| `promptEnabled` | boolean | `true` | 是否注入内置提示词段 |
+| `promptText` | string | 空 | 覆盖内置提示词段 |
+
+---
+
+## 7. 工作原理
+
+### 7.1 处理链路
+
+```
+入站
+  └─ 中间件（挂载于 QQBot 实例）
+       ├─ 指令识别与短路（/语音、/通话、/挂断）
+       ├─ 语音附件转写 → 写入 ctx.state.processedAttachments
+       └─ 语音/通话模式下追加回复方式提示
+
+出站
+  └─ 监听 session/event
+       └─ 通话或语音回复模式下合成并发送语音消息
+```
+
+转写结果写入 `ctx.state.processedAttachments`（`dsh-qqbot` 为扩展预留的字段），
+使 agent 接收到文本而非音频链接。
+
+### 7.2 机器人实例获取与容错
+
+- **注册表**：由补丁提供的 `qqbot-bots` 服务保存机器人实例及其关联对象。
+- **实例变更处理**：插件重载时 `dsh-qqbot` 会创建新的 `QQBot` 实例。插件按实例标识去重，
+  实例变更时卸载旧中间件并挂载至新实例。
+- **周期校验**：每 60 秒比对一次实例与中间件状态，自动修复实例变更或中间件被移除的情况。
+- **监听注册**：`session/event` 监听在 apply 阶段仅注册一次，避免重复播报。
+- **入站活性**：`diagnostic.json` 的 `lastInbound` 时间戳用于判断中间件是否仍在链路中。
+
+### 7.3 语音附件处理
+
+平台返回的语音附件通常包含 `url`（SILK）与 `voice_wav_url`（WAV）。插件优先使用 WAV；
+仅提供 SILK 时，使用 `silk-wasm` 解码；两者均不可用时回退至平台自带转写。
+
+### 7.4 运行状态文件
+
+| 路径 | 内容 |
+| --- | --- |
+| `~/.dsh/qqbot-voice/diagnostic.json` | 版本、引擎链、`qqbot-bots` 服务状态、已挂载机器人、最近入站事件 |
+| `~/.dsh/qqbot-voice/state.json` | 各会话的模式（`call` / `voice` / `off`） |
+| `~/.dsh/qqbot-voice/voice.log` | 语音发送与合成日志 |
+
+`diagnostic.json` 示例：
 
 ```json
 {
@@ -84,174 +278,106 @@ node tools/install.mjs --profile-dir <path>       # 指定 profile（默认 ~/.d
   "stt": ["dashscope", "qq"],
   "tts": ["dashscope"],
   "qqbotBotsService": true,
-  "bots": [{ "appId": "<你的机器人 appId>", "attachedAt": "..." }]
+  "bots": [{ "appId": "<appId>", "attachedAt": "2026-01-01T00:00:00.000Z", "reason": "register" }],
+  "lastInbound": "2026-01-01T00:00:00.000Z"
 }
 ```
 
-`qqbotBotsService: false` 或 `bots` 是空的 = 补丁没打上 / 没重启，重跑一次 install。
+---
 
-## 用法
-
-群里 @ 机器人发语音就行。指令（私聊直接发，群里 @ 之后发）：
-
-| 指令 | 作用 |
-| --- | --- |
-| `/语音` | 看状态（听/说各用什么引擎、当前模式） |
-| `/语音 开` / `/语音 关` | 语音回复模式：回复照发文字，另外再念一条语音 |
-| `/通话` | 开始语音通话（对讲）：机器人回语音、你发语音，静默 `maxIdleMinutes` 分钟自动挂断 |
-| `/挂断` | 挂断 |
-
-模型侧还有两个工具（模型也能自己用）：
-
-- `qqbot_say(text)` —— 说一句话（发语音）
-- `qqbot_voice_call(action)` —— `start` / `end` / `voice` / `off` / `status`
-
-## 引擎：听谁、说谁
-
-都做成**可替换的引擎链**，默认 `auto`（谁先能用谁上），配置里改。
-
-### 听（ASR）
-
-| engine | 说明 |
-| --- | --- |
-| `dashscope`（默认） | 阿里云百炼 `qwen3-asr-flash`，多模态原生接口。key 从环境变量 `DASHSCOPE_API_KEY` 或 `~/.dsh/.credentials.yaml` 里同名条目取 |
-| `http` | OpenAI 兼容的 `POST {baseURL}/audio/transcriptions`（whisper 之类） |
-| `command` | 本地命令模板，`{audio}` 换成音频路径、stdout 当结果（自己装了 whisper.cpp 就用这个） |
-| `qq` | QQ 平台自带的转写（`asr_refer_text`），免费但有时没有 |
-
-`stt.preferQq: true` 可以让平台自带转写优先，省掉外部调用。
-
-### 说（TTS）
-
-| engine | 说明 |
-| --- | --- |
-| `dashscope`（默认） | `qwen3-tts-flash`，音色 `Cherry` / `Serena` / `Ethan` / `Chelsie` |
-| `http` | OpenAI 兼容的 `POST {baseURL}/audio/speech` |
-| `command` | 本地命令模板：`{text}` 文本、`{out}` 输出文件、`{voice}` 音色。自己 `pip install edge-tts` 的话填 `edge-tts --voice {voice} --text {text} --write-media {out}` 就能用免费音色 |
-
-> 为什么内置不带 Edge 朗读接口：它要一个反爬的 `Sec-MS-GEC v2` token（自定义哈希），
-> 拿老算法一律 403——与其塞一段随时会坏的逆向代码，不如留 `command` 口子。
-
-## 实现要点（踩过的坑）
-
-**语音附件**：QQ 给的字段通常是 `[asr_refer_text, content_type, filename, size, url, voice_wav_url]`——
-**有 `voice_wav_url` 就直接用**，不用解 silk；只有 silk 且平台没给 wav 时，插件才用 `silk-wasm` 自己解码（纯 WASM，不用编译）。
-两条路都走不通才退回 QQ 自带转写。
-
-**0.1.0+6：`sendVoice` 的参数形状**
-一开始给 `mediaSender.sendVoice(target, 文件路径)` 传了裸字符串，而 SDK 要的是 `{ localPath }`——
-在 `normalizeSource` 里直接抛 `Cannot use 'in' operator`，错误被 try/catch 吞成日志，
-用户那边表现成「通话/语音模式只回文字」，一点线索都没有。现在：① 参数改成 `{ localPath }`；
-② 日志落盘 `~/.dsh/qqbot-voice/voice.log`；③ 自测的假发送器照着真 SDK 的脾气来，传裸路径就炸，回归用例盯住这个形状。
-
-**0.1.0+7：热重载后中间件挂在死实例上**
-插件热重载时 `dsh-qqbot` 会**新建一个 QQBot 实例**，注册表里的 entry 跟着换。
-原来的 `attachBot` 用 `bots.has(appId)` 去重——一看 appId 有了就直接 return，中间件留在**已经死掉的旧实例**上。
-症状极像「插件没装」：`diagnostic.json` 里机器人挂得好好的，但转写、指令、语音回复**全哑**，连日志都不写一行。现在：
-① 按**实例身份**去重，实例换了就把中间件摘下来重新挂到新实例；
-② 每 60 秒对一次账（watchdog），实例换了、或者中间件被人从链上摘了，都会自动修回来；
-③ `session/event` 监听改成 apply 级只注册一次（以前每重挂一次就多一个，会重复念）；
-④ `diagnostic.json` 多一个 `lastInbound` 字段——「中间件还在不在链上」看它时间戳动不动就知道。
-
-**双份转写**：`- ASR: …`（QQ 自带）和 `[Voice message] …`（插件转写）会同时出现在上下文里。
-两条一起看反而更容易认出人名（QQ 那条有时比外部 ASR 更准）。嫌啰嗦就把 `stt.preferQq` 打开，只留 QQ 那条。
-
-## 配置
-
-默认值都在 `lib/config.js` 的 `DEFAULTS`，想改就在 profile 的 `cordis.patch.yml` 里补一行（深合并）：
-
-```yaml
-- id: qqbot-voice
-  config:
-    tts:
-      voice: Serena
-    call:
-      maxIdleMinutes: 5
-      greetText: 喂，在呢，说吧
-    stt:
-      preferQq: true
-```
-
-常用项：
-
-| 配置 | 默认 | 说明 |
-| --- | --- | --- |
-| `stt.engine` / `tts.engine` | `auto` | 也可以写死 `dashscope` / `http` / `command` / `qq` / `off` |
-| `stt.dashscope.apiKeyEnv` | `DASHSCOPE_API_KEY` | 取 key 的环境变量名（也会去 `~/.dsh/.credentials.yaml` 找同名条目） |
-| `stt.timeoutMs` | `30000` | 转写超时，超了就退回 QQ 自带转写 |
-| `tts.maxChars` | `180` | 一条语音最多念多少字（超了按句子截断） |
-| `call.maxIdleMinutes` | `8` | 静默多久自动挂断 |
-| `call.announce` | `true` | 开始/挂断时说一句 |
-| `voiceReply.minChars` | `2` | 太短的回复（「嗯」）就不念了 |
-| `stateDir` | `~/.dsh/qqbot-voice` | 状态/诊断/日志落盘处 |
-
-key 的解析顺序：`config.apiKey` → 环境变量（`apiKeyEnv`）→ `~/.dsh/.credentials.yaml` 里的同名条目。
-
-## 自测
+## 8. 运行状态与故障排查
 
 ```powershell
-node tools/fake-host.mjs                 # 假宿主:把听/说/通话三条链路真跑一遍(含真 ASR/TTS)
-node tools/fake-host.mjs --no-network    # 只跑接线,不联网
-node tools/probe-roundtrip.mjs           # 说→听 闭环(验证 key 和两个引擎)
-node tools/make-voice.mjs "试一句"        # 单独试「说」:合成一条语音到本地(不碰 QQ)
-node tools/probe-asr.mjs [wav]           # 挨个试手头的 ASR 通道
-node tools/probe-voice.mjs               # 挨个试 TTS / ASR 通道
-node tools/check-live.mjs                # 把语音链路的现场证据打出来(只读)
-node tools/install.mjs --check           # 看装没装、补丁打没打
+node tools/fake-host.mjs              # 端到端自检（覆盖听、说、通话三条链路）
+node tools/fake-host.mjs --no-network # 仅验证接线，不调用外部服务
+node tools/probe-roundtrip.mjs        # 合成 → 识别闭环，验证凭据与引擎
+node tools/probe-asr.mjs [wav]        # 逐一测试 ASR 通道
+node tools/probe-voice.mjs            # 逐一测试 TTS / ASR 通道
+node tools/make-voice.mjs "文本"       # 单独验证语音合成，不发送至 QQ
+node tools/check-live.mjs             # 输出语音链路现场信息（只读）
+node tools/install.mjs --check        # 安装与补丁状态检查
 ```
 
-在 QQ 里的验证清单（建议按顺序）：
+| 现象 | 可能原因 | 处理 |
+| --- | --- | --- |
+| 插件无任何语音行为 | 补丁未执行或未重启 | 执行补丁脚本并重启 DSH；检查 `diagnostic.json` 的 `qqbotBotsService` 与 `bots` |
+| 转写缺失 | 语音附件未识别；ASR 引擎不可用 | 检查 `diagnostic.json` 的 `lastVoice` 与 `stt` 引擎链；确认凭据可用 |
+| 语音回复仅返回文本 | TTS 引擎不可用；发送参数异常 | 查看 `voice.log`；确认 TTS 引擎链非空 |
+| 通话中无响应 | 中间件未挂载至当前实例 | 等待周期校验自动修复，或重启 DSH；检查 `lastInbound` 是否更新 |
+| 平台转写与插件转写同时出现 | 两者并存 | 设置 `stt.preferQq: true` 仅保留平台转写 |
+| 群内主动消息失败 | 未开启机器人主动发言权限 | 由群管理员在群设置中开启 |
 
-1. 私聊发一条语音 → 机器人应该能听懂并回答（这就是「听」）；
-2. `/语音 开` → 之后每条回复都会多一条语音（这就是「说」）；
-3. `/通话` → 进入对讲模式：发语音、机器人回语音；说 `/挂断` 结束，或者放着不管，静默 8 分钟自动挂断；
-4. 说「打个电话给我」→ 模型应该自己调 `qqbot_voice_call(start)`（这就是「通话」的模型侧入口）。
+---
 
-## 已知限制
+## 9. 安全与隐私
 
-- **没有真·实时通话**（见上），对讲模式而已。
-- 一条语音最长 60 秒左右（QQ 平台限制），长文本会被截断/分段。
-- 群里**主动**发消息（比如静默挂断时那句「先挂了」）需要群主给机器人开「机器人主动在群聊内发言」；
-  没开的话只会在日志里报一句失败，不影响被动回复。
-- 转写会把语音内容发到外部 ASR 服务（默认阿里云百炼）；不想外发就换 `command` 引擎跑本地模型。
-- 需要给 `dsh-qqbot` 打补丁才能拿到机器人实例——**这是本插件最大的耦合点**，官方插件更新后要重跑 install。
+- **语音数据外发**：使用云端 ASR 引擎时，语音内容将发送至所配置的服务（默认阿里云百炼）。
+  如不允许外发，请改用 `command` 引擎在本地完成识别。
+- **凭据管理**：凭据读取自环境变量或 `~/.dsh/.credentials.yaml`，不写入仓库或日志。
+- **本地落盘**：语音临时文件位于 `~/.dsh-qqbot/media`，受 qqbot 的过期清理策略管理。
+- **权限范围**：补丁仅将机器人实例注册为服务，不改变 `dsh-qqbot` 原有行为。
 
-## 结构
+---
+
+## 10. 已知限制
+
+- 不支持实时语音通话（平台无 RTC 接口），通话为语音消息对讲模式。
+- 单条语音时长受平台限制（约 60 秒），超长文本将被截断或分段。
+- 群内主动消息需群管理员开启机器人主动发言权限。
+- 依赖对 `dsh-qqbot` 的补丁；该插件升级后需重新执行补丁。
+- 语音附件为 SILK 且平台未提供 WAV 时，需安装 `silk-wasm` 方可解码。
+
+---
+
+## 11. 开发
+
+### 11.1 目录结构
 
 ```
-index.js              插件入口:接线(机器人注册表 / 工具 / 提示词)
-lib/config.js         默认值、深合并、key 解析(env → ~/.dsh/.credentials.yaml)
-lib/store.js          「谁在通话」的状态,落 ~/.dsh/qqbot-voice/state.json
-lib/audio.js          语音附件下载、silk→wav、落盘
-lib/stt.js            听的引擎链
-lib/tts.js            说的引擎链 + 文本清洗(去 markdown/链接/emoji)+ 发送
-lib/middleware.js     入站:指令截获 / 转写 / 模式提示
-lib/call.js           模式状态机 + 出站把回复念出来
-lib/session-log.js    往会话日志里留一行(排查用)
-tools/                install / patch / 探针 / 假宿主自测 / make-voice
+index.js                    插件入口：服务接线、工具注册、提示词段
+lib/config.js               默认值、配置合并、凭据解析
+lib/store.js                会话模式状态
+lib/audio.js                语音附件下载、SILK 解码、落盘
+lib/stt.js                  语音转写引擎链
+lib/tts.js                  语音合成引擎链、文本清洗与发送
+lib/middleware.js           入站处理：指令识别、转写、模式提示
+lib/call.js                 模式状态机与出站播报
+lib/session-log.js          会话日志辅助记录
+tools/                      安装、补丁、探针与自检脚本
 ```
 
-## English
+### 11.2 本地验证
 
-**dsh-qqbot-voice — give your QQ bot ears and a mouth.**
+```powershell
+node tools/fake-host.mjs --no-network   # 不依赖外部服务的接线验证
+```
 
-A [DeepSeek Harness](https://deepseek.com/harness/) plugin for [`@tencent-connect/dsh-qqbot`](https://github.com/tencent-connect/dsh-qqbot):
+未配置 TTS 引擎时，语音合成相关用例将被跳过而非失败。
 
-- **Listen** — inbound voice messages are transcribed into the agent context as `[Voice message] …`;
-- **Speak** — replies can be spoken as QQ voice messages, on demand or automatically;
-- **Voice call (walkie-talkie)** — you send voice, it answers with voice; auto-hangs up after a silent period.
+---
 
-The official QQ bot API has no real-time (RTC) audio, so "call" is a walkie-talkie style exchange of voice messages,
-with the text reply kept as subtitles. Pluggable ASR/TTS engine chains (`dashscope` / `http` / `command` / `qq`).
+## 12. 许可证
+
+[MIT](LICENSE)
+
+---
+
+## English Overview
+
+**dsh-qqbot-voice** adds voice capabilities to [`@tencent-connect/dsh-qqbot`](https://github.com/tencent-connect/dsh-qqbot)
+within DeepSeek Harness:
+
+- **Listen** — inbound voice messages are transcribed and injected into the agent context as `[Voice message] <text>`;
+- **Speak** — replies can be synthesized and sent as QQ voice messages, on demand or automatically;
+- **Voice call** — a walkie-talkie mode in which both sides exchange voice messages, with automatic hang-up after a silent period.
+
+The official QQ bot API provides no real-time audio (RTC) interface, so the call mode operates on discrete
+voice messages. ASR and TTS are pluggable engine chains (`dashscope` / `http` / `command` / `qq`).
 
 ```bash
-dsh plugin --profile web add github:ChencLi819/dsh-qqbot-voice   # install
-node tools/install.mjs                                           # then patch dsh-qqbot's bot registry
+dsh plugin --profile web add github:ChencLi819/dsh-qqbot-voice
+node tools/install.mjs    # apply the dsh-qqbot bot-registry patch, then restart DSH
 ```
 
-The patch exposes the `QQBot` instance (which `dsh-qqbot` keeps private) as a Cordis service, without changing any
-existing behaviour. Requires a `DASHSCOPE_API_KEY` (or any OpenAI-compatible endpoint) for the default engines. MIT licensed.
-
-## License
-
-MIT
+Requires a `DASHSCOPE_API_KEY` (or any OpenAI-compatible endpoint) for the default engines.
+Licensed under the MIT License.
