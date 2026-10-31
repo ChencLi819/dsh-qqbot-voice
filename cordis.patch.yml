@@ -1,0 +1,11 @@
+# dsh-qqbot-voice bundle patch:只插一行 host 插件。
+#
+# 不给 config:默认值写在 lib/config.js 的 DEFAULTS 里(深合并),想改就在
+# profile 的 cordis.patch.yml 里补一行,例如:
+#   - id: qqbot-voice
+#     config:
+#       tts: { voice: Serena }
+#       call: { maxIdleMinutes: 5 }
+- insert:
+    - id: qqbot-voice
+      name: dsh-qqbot-voice

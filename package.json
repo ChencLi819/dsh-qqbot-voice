@@ -1,0 +1,64 @@
+{
+  "name": "dsh-qqbot-voice",
+  "version": "0.1.0",
+  "description": "给 QQ 机器人装上耳朵和嘴:群里/私聊的语音自动转成文字进上下文(ASR),回复能用语音念出来(TTS),还有对讲机式的语音通话模式。",
+  "type": "module",
+  "main": "index.js",
+  "icon": "icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "lib/",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "tools/"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": ">=20.3.0"
+  },
+  "optionalDependencies": {
+    "silk-wasm": "^3.7.1"
+  },
+  "peerDependencies": {
+    "@tencent-connect/dsh-qqbot": ">=0.5.0"
+  },
+  "peerDependenciesMeta": {
+    "@tencent-connect/dsh-qqbot": {
+      "optional": true
+    }
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "qqbot",
+    "qq",
+    "voice",
+    "asr",
+    "tts",
+    "speech",
+    "transcription"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ChencLi819/dsh-qqbot-voice.git"
+  },
+  "homepage": "https://github.com/ChencLi819/dsh-qqbot-voice#readme",
+  "bugs": {
+    "url": "https://github.com/ChencLi819/dsh-qqbot-voice/issues"
+  },
+  "author": "ChencLi819",
+  "license": "MIT"
+}
