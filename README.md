@@ -19,6 +19,29 @@ SDK（`@tencent-connect/qqbot-nodejs`）里也没有。所以机器人没法真�
 
 ## 安装
 
+### 方式一：一条命令装进 profile
+
+```bash
+# 从 GitHub 源码安装
+dsh plugin --profile web add github:ChencLi819/dsh-qqbot-voice
+
+# Desktop 版把 profile 换成 desktop
+dsh plugin --profile desktop add github:ChencLi819/dsh-qqbot-voice
+```
+
+> ⚠️ 这个插件**还需要给 `dsh-qqbot` 打一个补丁**才能拿到机器人实例（原因见下）。
+> 用 CLI 装完之后，补打一步：
+
+```powershell
+node tools/install.mjs        # 幂等：会补 pnpm link、bundles 和 dsh-qqbot 补丁
+# 或者只打补丁：
+node tools/patch-dsh-qqbot-voice-hook.mjs
+```
+
+装完**重启 DSH**（补丁改的是插件模块，热重载不一定重新导入）。
+
+### 方式二：用插件自带的安装脚本（一步到位）
+
 ```powershell
 node tools/install.mjs
 ```
@@ -221,8 +244,9 @@ A [DeepSeek Harness](https://deepseek.com/harness/) plugin for [`@tencent-connec
 The official QQ bot API has no real-time (RTC) audio, so "call" is a walkie-talkie style exchange of voice messages,
 with the text reply kept as subtitles. Pluggable ASR/TTS engine chains (`dashscope` / `http` / `command` / `qq`).
 
-```powershell
-node tools/install.mjs   # pnpm add link + profile bundle + patch dsh-qqbot's bot registry
+```bash
+dsh plugin --profile web add github:ChencLi819/dsh-qqbot-voice   # install
+node tools/install.mjs                                           # then patch dsh-qqbot's bot registry
 ```
 
 The patch exposes the `QQBot` instance (which `dsh-qqbot` keeps private) as a Cordis service, without changing any
