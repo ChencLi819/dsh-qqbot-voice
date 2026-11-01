@@ -61,10 +61,14 @@ DeepSeek Harness（DSH）插件，为 [`@tencent-connect/dsh-qqbot`](https://git
 ### 3.1 通过 DSH CLI 安装
 
 ```bash
+# 从 npm 安装
+dsh plugin --profile web add dsh-qqbot-voice
+
+# 或从源码安装
 dsh plugin --profile web add github:ChencLi819/dsh-qqbot-voice
 
 # Desktop 版
-dsh plugin --profile desktop add github:ChencLi819/dsh-qqbot-voice
+dsh plugin --profile desktop add dsh-qqbot-voice
 ```
 
 本插件需通过补丁获取 `dsh-qqbot` 的机器人实例，安装后需执行补丁步骤：
